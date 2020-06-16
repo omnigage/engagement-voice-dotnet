@@ -15,7 +15,7 @@ namespace omnigage_engagement_voice
     public class Program
     {
         /// <summary>
-        /// To use this example, you will need the following:
+        /// To run this application, this following is required:
         ///
         /// - API token key/secret from Account -> Developer -> API Tokens
         /// - The account key from Account -> Settings -> General -> "Key" field
@@ -265,20 +265,6 @@ namespace omnigage_engagement_voice
             HttpResponseMessage request = await client.PatchAsync(uri, payload);
             string response = await request.Content.ReadAsStringAsync();
             return JObject.Parse(response);
-        }
-
-        /// <summary>
-        /// Create a GET request to the Omnigage API and return an object for retrieving tokens
-        /// </summary>
-        /// <param name="client"></param>
-        /// <param name="uri"></param>
-        /// <returns>JObject</returns>
-        static async Task<JObject> GetRequest(HttpClient client, string uri)
-        {
-            HttpResponseMessage response = await client.GetAsync(uri);
-            response.EnsureSuccessStatusCode();
-            string responseBody = await response.Content.ReadAsStringAsync();
-            return JObject.Parse(responseBody);
         }
         
         /// <summary>
