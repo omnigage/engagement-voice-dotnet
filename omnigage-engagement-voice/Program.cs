@@ -15,7 +15,7 @@ namespace omnigage_engagement_voice
     public class Program
     {
         /// <summary>
-        /// To run this application, this following is required:
+        /// To run this application, the following is required:
         ///
         /// - API token key/secret from Account -> Developer -> API Tokens
         /// - The account key from Account -> Settings -> General -> "Key" field
@@ -96,14 +96,15 @@ namespace omnigage_engagement_voice
         }
 
         /// <summary>
-        /// Upload file, create an voice template
+        /// Create two voice templates, an engagement and populate the queue.
         /// </summary>
-        /// <param name="tokenKey"></param>
-        /// <param name="tokenSecret"></param>
-        /// <param name="accountKey"></param>
-        /// <param name="host"></param>
-        /// <param name="filePaths"></param>
-        /// <param name="body"></param>
+        /// <param name="auth"></param>
+        /// <param name="engagementInstance"></param>
+        /// <param name="activityInstance"></param>
+        /// <param name="humanRecording"></param>
+        /// <param name="machineRecording"></param>
+        /// <param name="envelopes"></param>
+        /// <returns></returns>
         static async Task MainAsync(AuthContext auth, EngagementResource engagementInstance, ActivityResource activityInstance, VoiceTemplateResource humanRecording, VoiceTemplateResource machineRecording, List<EnvelopeResource> envelopes)
         {
             using (var client = new HttpClient())
