@@ -45,45 +45,45 @@ namespace omnigage_engagement_voice
             //
             // 2. Define recording for human trigger
             //
-            VoiceTemplateResource humanRecording = new VoiceTemplateResource();
-            humanRecording.name = "Human Recording";
-            humanRecording.kind = "audio";
-            humanRecording.filePath = ""; // Full path to audio file (e.g., /Users/Shared/piano.wav on Mac)
+            VoiceTemplateModel humanRecording = new VoiceTemplateModel();
+            humanRecording.Name = "Human Recording";
+            humanRecording.Kind = "audio";
+            humanRecording.FilePath = ""; // Full path to audio file (e.g., /Users/Shared/piano.wav on Mac)
 
             //
             // 3. Define recording for machine trigger
             //
-            VoiceTemplateResource machineRecording = new VoiceTemplateResource();
-            machineRecording.name = "Machine Recording";
-            machineRecording.kind = "audio";
-            machineRecording.filePath = ""; // Full path to audio file (e.g., /Users/Shared/nimoy_spock.wav on Mac)
+            VoiceTemplateModel machineRecording = new VoiceTemplateModel();
+            machineRecording.Name = "Machine Recording";
+            machineRecording.Kind = "audio";
+            machineRecording.FilePath = ""; // Full path to audio file (e.g., /Users/Shared/nimoy_spock.wav on Mac)
 
             //
             // 4. Set the caller ID for the voice activity
             //
-            ActivityResource activity = new ActivityResource();
-            activity.name = "Voice Blast";
-            activity.kind = "voice";
-            activity.callerIdId = ""; // UUID (e.g., yL9vQaWrSqg5W8EFEpE6xZ )
+            ActivityModel activity = new ActivityModel();
+            activity.Name = "Voice Blast";
+            activity.Kind = "voice";
+            activity.CallerIdId = ""; // UUID (e.g., yL9vQaWrSqg5W8EFEpE6xZ )
 
             //
             // 5. Define or more envelopes for populating the engagement queue
             //
-            EnvelopeResource envelope = new EnvelopeResource();
-            envelope.firstName = "";
-            envelope.lastName = "";
-            envelope.phoneNumber = ""; // In E.164 format (such as +1xxxxxxxxx)
+            EnvelopeModel envelope = new EnvelopeModel();
+            envelope.FirstName = "";
+            envelope.LastName = "";
+            envelope.PhoneNumber = ""; // In E.164 format (such as +1xxxxxxxxx)
 
             // Push one or more envelopes into list
-            List<EnvelopeResource> envelopes = new List<EnvelopeResource> {};
+            List<EnvelopeModel> envelopes = new List<EnvelopeModel> { };
             envelopes.Add(envelope);
 
             //
             // 6. Optionally, customize engagement name
             //
-            EngagementResource engagement = new EngagementResource();
-            engagement.name = "Example Voice Blast";
-            engagement.direction = "outbound";
+            EngagementModel engagement = new EngagementModel();
+            engagement.Name = "Example Voice Blast";
+            engagement.Direction = "outbound";
 
             try
             {
@@ -99,13 +99,13 @@ namespace omnigage_engagement_voice
         /// Create two voice templates, an engagement and populate the queue.
         /// </summary>
         /// <param name="auth"></param>
-        /// <param name="engagementInstance"></param>
-        /// <param name="activityInstance"></param>
+        /// <param name="engagement"></param>
+        /// <param name="activity"></param>
         /// <param name="humanRecording"></param>
         /// <param name="machineRecording"></param>
         /// <param name="envelopes"></param>
         /// <returns></returns>
-        static async Task MainAsync(AuthContext auth, EngagementResource engagementInstance, ActivityResource activityInstance, VoiceTemplateResource humanRecording, VoiceTemplateResource machineRecording, List<EnvelopeResource> envelopes)
+        static async Task MainAsync(AuthContext auth, EngagementModel engagement, ActivityModel activity, VoiceTemplateModel humanRecording, VoiceTemplateModel machineRecording, List<EnvelopeModel> envelopes)
         {
             using (var client = new HttpClient())
             {
@@ -117,76 +117,59 @@ namespace omnigage_engagement_voice
                 client.DefaultRequestHeaders.Add("Authorization", "Basic " + auth.authorization);
                 client.DefaultRequestHeaders.Add("X-Account-Key", auth.accountKey);
 
-                humanRecording.uploadId = await Upload(humanRecording.filePath, client);
-                machineRecording.uploadId = await Upload(machineRecording.filePath, client);
+                // Upload audio files and assign upload IDs
+                humanRecording.UploadId = await Upload(humanRecording.FilePath, client);
+                machineRecording.UploadId = await Upload(machineRecording.FilePath, client);
 
-                // Build `voice-template` instance payload and make request for human trigger
-                string voiceTemplateHumanContent = CreateVoiceTemplateSchema(humanRecording);
-                JObject voiceTemplateHumanResponse = await PostRequest(client, "voice-templates", voiceTemplateHumanContent);
-                humanRecording.id = (string)voiceTemplateHumanResponse.SelectToken("data.id");
+                // Create voice recording, which will be used for the `human` trigger
+                await humanRecording.Create(client);
 
-                // Build `voice-template` instance payload and make request for machine trigger
-                string voiceTemplateMachineContent = CreateVoiceTemplateSchema(machineRecording);
-                JObject voiceTemplateMachineResponse = await PostRequest(client, "voice-templates", voiceTemplateMachineContent);
-                machineRecording.id = (string)voiceTemplateMachineResponse.SelectToken("data.id");
+                // Create voice recording, to be used for the `machine` trigger
+                await machineRecording.Create(client);
 
-                Console.WriteLine($"Voice Template ID (human): {humanRecording.id}");
-                Console.WriteLine($"Voice Template ID (machine): {machineRecording.id}");
+                Console.WriteLine($"Voice Template ID (human): {humanRecording.Id}");
+                Console.WriteLine($"Voice Template ID (machine): {machineRecording.Id}");
 
-                // Build `engagement` instance payload and make request
-                string engagementContent = CreateEngagementSchema(engagementInstance);
-                JObject engagementResponse = await PostRequest(client, "engagements", engagementContent);
-                engagementInstance.id = (string)engagementResponse.SelectToken("data.id");
+                await engagement.Create(client);
 
                 // Build `activity` instance payload and make request
-                activityInstance.engagementId = engagementInstance.id;
-                string activityContent = CreateActivitySchema(activityInstance);
-                JObject activityResponse = await PostRequest(client, "activities", activityContent);
-                activityInstance.id = (string)activityResponse.SelectToken("data.id");
+                activity.EngagementId = engagement.Id;
+                await activity.Create(client);
 
-                Console.WriteLine($"Engagement ID: {engagementInstance.id}");
-                Console.WriteLine($"Activity ID: {activityInstance.id}");
+                Console.WriteLine($"Engagement ID: {engagement.Id}");
+                Console.WriteLine($"Activity ID: {activity.Id}");
 
                 // Define human trigger
-                TriggerResource triggerHumanInstance = new TriggerResource();
-                triggerHumanInstance.kind = "play";
-                triggerHumanInstance.onEvent = "voice-human";
-                triggerHumanInstance.activityId = activityInstance.id;
-                triggerHumanInstance.voiceTemplateId = humanRecording.id;
+                TriggerModel triggerHumanInstance = new TriggerModel();
+                triggerHumanInstance.Kind = "play";
+                triggerHumanInstance.OnEvent = "voice-human";
+                triggerHumanInstance.ActivityId = activity.Id;
+                triggerHumanInstance.VoiceTemplateId = humanRecording.Id;
+                await triggerHumanInstance.Create(client);
 
                 // Define machine trigger
-                TriggerResource triggerMachineInstance = new TriggerResource();
-                triggerMachineInstance.kind = "play";
-                triggerMachineInstance.onEvent = "voice-machine";
-                triggerMachineInstance.activityId = activityInstance.id;
-                triggerMachineInstance.voiceTemplateId = machineRecording.id;
+                TriggerModel triggerMachineInstance = new TriggerModel();
+                triggerMachineInstance.Kind = "play";
+                triggerMachineInstance.OnEvent = "voice-machine";
+                triggerMachineInstance.ActivityId = activity.Id;
+                triggerMachineInstance.VoiceTemplateId = machineRecording.Id;
+                await triggerMachineInstance.Create(client);
 
-                // Build human `trigger` instance payload and make request
-                string triggerContentForHuman = CreateTriggerSchema(triggerHumanInstance);
-                JObject triggerResponseForHuman = await PostRequest(client, "triggers", triggerContentForHuman);
-                triggerHumanInstance.id = (string)triggerResponseForHuman.SelectToken("data.id");
-
-                // Build machine `trigger` instance payload and make request
-                string triggerContentForMachine = CreateTriggerSchema(triggerMachineInstance);
-                JObject triggerResponseForMachine = await PostRequest(client, "triggers", triggerContentForMachine);
-                triggerMachineInstance.id = (string)triggerResponseForMachine.SelectToken("data.id");
-
-                Console.WriteLine($"Trigger ID (human): {triggerHumanInstance.id}");
-                Console.WriteLine($"Trigger ID (machine): {triggerMachineInstance.id}");
+                Console.WriteLine($"Trigger ID (human): {triggerHumanInstance.Id}");
+                Console.WriteLine($"Trigger ID (machine): {triggerMachineInstance.Id}");
 
                 // Set the engagement id on the envelopes
                 foreach (var envelope in envelopes)
                 {
-                    envelope.engagementId = engagementInstance.id;
+                    envelope.EngagementId = engagement.Id;
                 }
 
                 // Populate engagement queue
-                PostBulkRequest(auth, "envelopes", CreateEnvelopeSchema(envelopes));
+                PostBulkRequest(auth, "envelopes", EnvelopeModel.SerializeBulk(envelopes));
 
                 // Schedule engagement for processing
-                engagementInstance.status = "scheduled";
-                string engagementScheduleContent = CreateEngagementSchema(engagementInstance);
-                await PatchRequest(client, $"engagements/{engagementInstance.id}", engagementScheduleContent);
+                engagement.Status = "scheduled";
+                await engagement.Update(client);
             };
         }
 
@@ -218,7 +201,7 @@ namespace omnigage_engagement_voice
 
             // Build `upload` instance payload and make request
             string uploadContent = CreateUploadSchema(fileName, mimeType, fileSize);
-            JObject uploadResponse = await PostRequest(client, "uploads", uploadContent);
+            JObject uploadResponse = await Adapter.PostRequest(client, "uploads", uploadContent);
 
             // Extract upload ID and request URL
             string uploadId = (string)uploadResponse.SelectToken("data.id");
@@ -236,36 +219,6 @@ namespace omnigage_engagement_voice
 
                 return uploadId;
             };
-        }
-
-        /// <summary>
-        /// Create a POST request to the Omnigage API and return an object for retrieving tokens
-        /// </summary>
-        /// <param name="client"></param>
-        /// <param name="uri"></param>
-        /// <param name="content"></param>
-        /// <returns>JObject</returns>
-        static async Task<JObject> PostRequest(HttpClient client, string uri, string content)
-        {
-            StringContent payload = new StringContent(content, Encoding.UTF8, "application/json");
-            HttpResponseMessage request = await client.PostAsync(uri, payload);
-            string response = await request.Content.ReadAsStringAsync();
-            return JObject.Parse(response);
-        }
-
-        /// <summary>
-        /// Create a PATCH request to the Omnigage API and return an object for retrieving tokens
-        /// </summary>
-        /// <param name="client"></param>
-        /// <param name="uri"></param>
-        /// <param name="content"></param>
-        /// <returns>JObject</returns>
-        static async Task<JObject> PatchRequest(HttpClient client, string uri, string content)
-        {
-            StringContent payload = new StringContent(content, Encoding.UTF8, "application/json");
-            HttpResponseMessage request = await client.PatchAsync(uri, payload);
-            string response = await request.Content.ReadAsStringAsync();
-            return JObject.Parse(response);
         }
         
         /// <summary>
@@ -396,172 +349,6 @@ namespace omnigage_engagement_voice
         }
 
         /// <summary>
-        /// Create Omnigage `/voice-templates` schema
-        /// </summary>
-        /// <param name="instance"></param>
-        /// <returns>JSON</returns>
-        static string CreateVoiceTemplateSchema(VoiceTemplateResource instance)
-        {
-            return @"{
-                ""data"":{
-                    ""attributes"":{
-                        ""name"":""" + instance.name + @""",
-                        ""kind"":""" + instance.kind + @"""
-                    },
-                    ""relationships"":{
-                        ""upload"":{
-                            ""data"": {
-                                ""type"": ""uploads"",
-                                ""id"": """ + instance.uploadId + @"""
-                            }
-                        }
-                    },
-                    ""type"":""voice-templates""
-                }
-            }";
-        }
-
-        /// <summary>
-        /// Create Omnigage `/engagements` schema
-        /// </summary>
-        /// <param name="instance"></param>
-        /// <returns>JSON</returns>
-        static string CreateEngagementSchema(EngagementResource instance)
-        {
-            string id = "";
-            if (instance.id != null)
-            {
-                id = $"\"id\": \"{instance.id}\",";
-            }
-
-            string status = "";
-            if (instance.status != null)
-            {
-                status = $"\"status\": \"{instance.status}\",";
-            }
-
-            return @"{
-                ""data"":{
-                    " + id + @"
-                    ""attributes"":{
-                        " + status + @"
-                        ""name"":""" + instance.name + @""",
-                        ""direction"":""" + instance.direction + @"""
-                    },
-                    ""type"":""engagements""
-                }
-            }";
-        }
-
-        /// <summary>
-        /// Create Omnigage `/activities` schema
-        /// </summary>
-        /// <param name="instance"></param>
-        /// <returns>JSON</returns>
-        static string CreateActivitySchema(ActivityResource instance)
-        {
-            return @"{
-                ""data"":{
-                    ""attributes"":{
-                        ""name"":""" + instance.name + @""",
-                        ""kind"":""" + instance.kind + @"""
-                    },
-                    ""relationships"":{
-                        ""engagement"":{
-                            ""data"": {
-                                ""type"": ""engagements"",
-                                ""id"": """ + instance.engagementId + @"""
-                            }
-                        },
-                        ""caller-id"":{
-                            ""data"": {
-                                ""type"": ""caller-ids"",
-                                ""id"": """ + instance.callerIdId + @"""
-                            }
-                        }
-                    },
-                    ""type"":""activities""
-                }
-            }";
-        }
-
-        /// <summary>
-        /// Create Omnigage `/triggers` schema
-        /// </summary>
-        /// <param name="instance"></param>
-        /// <returns>JSON</returns>
-        static string CreateTriggerSchema(TriggerResource instance)
-        {
-            return @"{
-                ""data"":{
-                    ""attributes"":{
-                        ""kind"":""" + instance.kind + @""",
-                        ""on-event"":""" + instance.onEvent + @"""
-                    },
-                    ""relationships"":{
-                        ""activity"":{
-                            ""data"": {
-                                ""type"": ""activities"",
-                                ""id"": """ + instance.activityId + @"""
-                            }
-                        },
-                        ""voice-template"":{
-                            ""data"": {
-                                ""type"": ""voice-templates"",
-                                ""id"": """ + instance.voiceTemplateId + @"""
-                            }
-                        }
-                    },
-                    ""type"":""triggers""
-                }
-            }";
-        }
-
-        /// <summary>
-        /// Create bulk Omnigage `/envelopes` schema
-        /// </summary>
-        /// <param name="envelopes"></param>
-        /// <returns>JSON</returns>
-        static string CreateEnvelopeSchema(List<EnvelopeResource> envelopes)
-        {
-            // Buld the serialized list of envelopes
-            string instances = "";
-            foreach (var instance in envelopes)
-            {
-                if (instances != "")
-                {
-                    instances += ",";
-                }
-
-                instances += @"{
-                    ""attributes"":{
-                        ""phone-number"":""" + instance.phoneNumber + @""",
-                        ""meta"": {
-                            ""first-name"":""" + instance.firstName + @""",
-                            ""last-name"":""" + instance.lastName + @"""
-                        }
-                    },
-                    ""relationships"":{
-                        ""engagement"":{
-                            ""data"": {
-                                ""type"": ""engagements"",
-                                ""id"": """ + instance.engagementId + @"""
-                            }
-                        }
-                    },
-                    ""type"":""envelopes""
-                }";
-            }
-
-            // Create bulk envelope schema
-            string envelopeRequestContent = @"{
-                ""data"": [" + instances + @"]
-            }";
-
-            return envelopeRequestContent;
-        }
-
-        /// <summary>
         /// Create Authorization token following RFC 2617 
         /// </summary>
         /// <param name="key"></param>
@@ -588,47 +375,265 @@ namespace omnigage_engagement_voice
         public string authorization;
     }
 
-    public class VoiceTemplateResource
+    public class VoiceTemplateModel : Adapter
     {
-        public string id;
-        public string name;
-        public string kind;
-        public string uploadId;
-        public string filePath;
+        public string Name { get; set; }
+        public string Kind { get; set; }
+        public string UploadId { get; set; }
+        public string FilePath { get; set; }
+
+        public override string Type { get { return "voice-templates"; } }
+
+        public override string Serialize()
+        {
+            return @"{
+                ""attributes"":{
+                    ""name"":""" + this.Name + @""",
+                    ""kind"":""" + this.Kind + @"""
+                },
+                ""relationships"":{
+                    ""upload"":{
+                        ""data"": {
+                            ""type"": ""uploads"",
+                            ""id"": """ + this.UploadId + @"""
+                        }
+                    }
+                },
+                ""type"":""voice-templates""
+            }";
+        }
     }
 
-    public class EngagementResource
+    public class EngagementModel : Adapter
     {
-        public string id;
-        public string name;
-        public string direction;
-        public string status;
+        public string Name;
+        public string Direction;
+        public string Status;
+
+        public override string Type { get { return "engagements"; } }
+
+        public override string Serialize()
+        {
+            string id = "";
+            if (this.Id != null)
+            {
+                id = $"\"id\": \"{this.Id}\",";
+            }
+
+            string status = "";
+            if (this.Status != null)
+            {
+                status = $"\"status\": \"{this.Status}\",";
+            }
+
+            return @"{
+                " + id + @"
+                ""attributes"":{
+                    " + status + @"
+                    ""name"":""" + this.Name + @""",
+                    ""direction"":""" + this.Direction + @"""
+                },
+                ""type"":""engagements""
+            }";
+        }
     }
 
-    public class ActivityResource
+    public class ActivityModel : Adapter
     {
-        public string id;
-        public string name;
-        public string kind;
-        public string engagementId;
-        public string callerIdId;
+        public string Name;
+        public string Kind;
+        public string EngagementId;
+        public string CallerIdId;
+
+        public override string Type { get { return "activities"; } }
+
+        public override string Serialize()
+        {
+            return @"{
+                ""attributes"":{
+                    ""name"":""" + this.Name + @""",
+                    ""kind"":""" + this.Kind + @"""
+                },
+                ""relationships"":{
+                    ""engagement"":{
+                        ""data"": {
+                            ""type"": ""engagements"",
+                            ""id"": """ + this.EngagementId + @"""
+                        }
+                    },
+                    ""caller-id"":{
+                        ""data"": {
+                            ""type"": ""caller-ids"",
+                            ""id"": """ + this.CallerIdId + @"""
+                        }
+                    }
+                },
+                ""type"":""activities""
+            }";
+        }
     }
 
-    public class TriggerResource
+    public class TriggerModel : Adapter
     {
-        public string id;
-        public string kind;
-        public string onEvent;
-        public string voiceTemplateId;
-        public string activityId;
+        public string Kind;
+        public string OnEvent;
+        public string VoiceTemplateId;
+        public string ActivityId;
+
+        public override string Type { get { return "triggers"; } }
+
+        public override string Serialize()
+        {
+            return @"{
+                ""attributes"":{
+                    ""kind"":""" + this.Kind + @""",
+                    ""on-event"":""" + this.OnEvent + @"""
+                },
+                ""relationships"":{
+                    ""activity"":{
+                        ""data"": {
+                            ""type"": ""activities"",
+                            ""id"": """ + this.ActivityId + @"""
+                        }
+                    },
+                    ""voice-template"":{
+                        ""data"": {
+                            ""type"": ""voice-templates"",
+                            ""id"": """ + this.VoiceTemplateId + @"""
+                        }
+                    }
+                },
+                ""type"":""triggers""
+            }";
+        }
     }
 
-    public class EnvelopeResource
+    public class EnvelopeModel : Adapter
     {
-        public string id;
-        public string firstName;
-        public string lastName;
-        public string phoneNumber;
-        public string engagementId;
+        public string FirstName;
+        public string LastName;
+        public string PhoneNumber;
+        public string EngagementId;
+
+        public override string Type { get { return "envelopes"; } }
+
+        public override string Serialize()
+        {
+            return @"{
+                ""attributes"":{
+                    ""phone-number"":""" + this.PhoneNumber + @""",
+                    ""meta"": {
+                        ""first-name"":""" + this.FirstName + @""",
+                        ""last-name"":""" + this.LastName + @"""
+                    }
+                },
+                ""relationships"":{
+                    ""engagement"":{
+                        ""data"": {
+                            ""type"": ""engagements"",
+                            ""id"": """ + this.EngagementId + @"""
+                        }
+                    }
+                },
+                ""type"":""envelopes""
+            }";
+        }
+
+        public static string SerializeBulk(List<EnvelopeModel> records)
+        {
+            // Build the serialized list
+            string instances = "";
+            foreach (var instance in records)
+            {
+                if (instances != "")
+                {
+                    instances += ",";
+                }
+
+                instances += instance.Serialize();
+            }
+
+            // Create bulk envelope schema
+            string payload = @"{
+                ""data"": [" + instances + @"]
+            }";
+
+            return payload;
+        }
+    }
+
+    abstract public class Adapter
+    {
+        public string Id { get; set; }
+        public abstract string Serialize();
+        public abstract string Type { get; }
+
+        /// <summary>
+        /// Serialize wrapper for payload. In JSON:API, this is a "data" envelope.
+        /// </summary>
+        /// <param name="payload"></param>
+        /// <returns></returns>
+        static public string SerializePayload(string payload)
+        {
+            return @"{
+                ""data"": " + payload + @"
+            }";
+        }
+
+        /// <summary>
+        /// Helper method for creating a new instance.
+        /// </summary>
+        /// <param name="client"></param>
+        /// <returns></returns>
+        public async Task<JObject> Create(HttpClient client)
+        {
+            string payload = this.Serialize();
+            JObject response = await PostRequest(client, this.Type, SerializePayload(payload));
+            this.Id = (string)response.SelectToken("data.id");
+            return response;
+        }
+
+        /// <summary>
+        /// Helper method for updating an instance.
+        /// </summary>
+        /// <param name="client"></param>
+        /// <returns></returns>
+        public async Task<JObject> Update(HttpClient client)
+        {
+            string payload = this.Serialize();
+            JObject response = await PatchRequest(client, $"{this.Type}/{this.Id}", SerializePayload(payload));
+            return response;
+        }
+
+        /// <summary>
+        /// Create a POST request to the Omnigage API and return an object for retrieving tokens
+        /// </summary>
+        /// <param name="client"></param>
+        /// <param name="uri"></param>
+        /// <param name="content"></param>
+        /// <returns>JObject</returns>
+        public static async Task<JObject> PostRequest(HttpClient client, string uri, string content)
+        {
+            StringContent payload = new StringContent(content, Encoding.UTF8, "application/json");
+            HttpResponseMessage request = await client.PostAsync(uri, payload);
+            string response = await request.Content.ReadAsStringAsync();
+            return JObject.Parse(response);
+        }
+
+
+        /// <summary>
+        /// Create a PATCH request to the Omnigage API and return an object for retrieving tokens
+        /// </summary>
+        /// <param name="client"></param>
+        /// <param name="uri"></param>
+        /// <param name="content"></param>
+        /// <returns>JObject</returns>
+        public static async Task<JObject> PatchRequest(HttpClient client, string uri, string content)
+        {
+            StringContent payload = new StringContent(content, Encoding.UTF8, "application/json");
+            HttpResponseMessage request = await client.PatchAsync(uri, payload);
+            string response = await request.Content.ReadAsStringAsync();
+            return JObject.Parse(response);
+        }
     }
 }
