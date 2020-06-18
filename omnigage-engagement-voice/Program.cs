@@ -8,7 +8,9 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
 using RestSharp;
+using JsonApiSerializer;
 
 namespace omnigage_engagement_voice
 {
@@ -33,14 +35,14 @@ namespace omnigage_engagement_voice
             AuthContext auth = new AuthContext();
 
             // Set token retrieved from Account -> Developer -> API Tokens
-            auth.tokenKey = "";
-            auth.tokenSecret = "";
+            auth.TokenKey = "";
+            auth.TokenSecret = "";
 
             // Retrieve from Account -> Settings -> General -> "Key" field
-            auth.accountKey = "";
+            auth.AccountKey = "";
 
             // API host path (e.g., https://api.omnigage.io/api/v1/)
-            auth.host = "";
+            auth.Host = "";
 
             //
             // 2. Define recording for human trigger
@@ -64,15 +66,21 @@ namespace omnigage_engagement_voice
             ActivityModel activity = new ActivityModel();
             activity.Name = "Voice Blast";
             activity.Kind = "voice";
-            activity.CallerIdId = ""; // UUID (e.g., yL9vQaWrSqg5W8EFEpE6xZ )
+            activity.CallerId = new CallerIdModel
+            {
+                Id = "" // UUID (e.g., yL9vQaWrSqg5W8EFEpE6xZ )
+            };
 
             //
             // 5. Define or more envelopes for populating the engagement queue
             //
             EnvelopeModel envelope = new EnvelopeModel();
-            envelope.FirstName = "";
-            envelope.LastName = "";
             envelope.PhoneNumber = ""; // In E.164 format (such as +1xxxxxxxxx)
+            envelope.Meta = new Dictionary<string, string>
+            {
+                { "first-name", "" },
+                { "last-name", "" }
+            };
 
             // Push one or more envelopes into list
             List<EnvelopeModel> envelopes = new List<EnvelopeModel> { };
@@ -109,17 +117,20 @@ namespace omnigage_engagement_voice
         {
             using (var client = new HttpClient())
             {
-                // Build basic authorization
-                auth.authorization = CreateAuthorization(auth.tokenKey, auth.tokenSecret);
-
                 // Set request context for Omnigage API
-                client.BaseAddress = new Uri(auth.host);
-                client.DefaultRequestHeaders.Add("Authorization", "Basic " + auth.authorization);
-                client.DefaultRequestHeaders.Add("X-Account-Key", auth.accountKey);
+                client.BaseAddress = new Uri(auth.Host);
+                client.DefaultRequestHeaders.Add("Authorization", "Basic " + auth.Authorization);
+                client.DefaultRequestHeaders.Add("X-Account-Key", auth.AccountKey);
 
                 // Upload audio files and assign upload IDs
-                humanRecording.UploadId = await Upload(humanRecording.FilePath, client);
-                machineRecording.UploadId = await Upload(machineRecording.FilePath, client);
+                humanRecording.Upload = new UploadModel
+                {
+                    Id = await Upload(humanRecording.FilePath, client)
+                };
+                machineRecording.Upload = new UploadModel
+                {
+                    Id = await Upload(machineRecording.FilePath, client)
+                };
 
                 // Create voice recording, which will be used for the `human` trigger
                 await humanRecording.Create(client);
@@ -130,10 +141,11 @@ namespace omnigage_engagement_voice
                 Console.WriteLine($"Voice Template ID (human): {humanRecording.Id}");
                 Console.WriteLine($"Voice Template ID (machine): {machineRecording.Id}");
 
+                // Create engagement
                 await engagement.Create(client);
 
-                // Build `activity` instance payload and make request
-                activity.EngagementId = engagement.Id;
+                // Create activity
+                activity.Engagement = engagement;
                 await activity.Create(client);
 
                 Console.WriteLine($"Engagement ID: {engagement.Id}");
@@ -143,16 +155,18 @@ namespace omnigage_engagement_voice
                 TriggerModel triggerHumanInstance = new TriggerModel();
                 triggerHumanInstance.Kind = "play";
                 triggerHumanInstance.OnEvent = "voice-human";
-                triggerHumanInstance.ActivityId = activity.Id;
-                triggerHumanInstance.VoiceTemplateId = humanRecording.Id;
-                await triggerHumanInstance.Create(client);
+                triggerHumanInstance.Activity = activity;
+                triggerHumanInstance.VoiceTemplate = humanRecording;
 
                 // Define machine trigger
                 TriggerModel triggerMachineInstance = new TriggerModel();
                 triggerMachineInstance.Kind = "play";
                 triggerMachineInstance.OnEvent = "voice-machine";
-                triggerMachineInstance.ActivityId = activity.Id;
-                triggerMachineInstance.VoiceTemplateId = machineRecording.Id;
+                triggerMachineInstance.Activity = activity;
+                triggerMachineInstance.VoiceTemplate = machineRecording;
+
+                // Create triggers
+                await triggerHumanInstance.Create(client);
                 await triggerMachineInstance.Create(client);
 
                 Console.WriteLine($"Trigger ID (human): {triggerHumanInstance.Id}");
@@ -161,7 +175,7 @@ namespace omnigage_engagement_voice
                 // Set the engagement id on the envelopes
                 foreach (var envelope in envelopes)
                 {
-                    envelope.EngagementId = engagement.Id;
+                    envelope.Engagement = engagement;
                 }
 
                 // Populate engagement queue
@@ -231,12 +245,12 @@ namespace omnigage_engagement_voice
         static IRestResponse PostBulkRequest(AuthContext auth, string uri, string payload)
         {
             string bulkRequestHeader = "application/vnd.api+json;ext=bulk";
-            var bulkClient = new RestClient(auth.host + uri);
+            var bulkClient = new RestClient(auth.Host + uri);
             var request = new RestRequest(Method.POST);
             request.AddHeader("Accept", bulkRequestHeader);
             request.AddHeader("Content-Type", bulkRequestHeader);
-            request.AddHeader("X-Account-Key", auth.accountKey);
-            request.AddHeader("Authorization", "Basic " + auth.authorization);
+            request.AddHeader("X-Account-Key", auth.AccountKey);
+            request.AddHeader("Authorization", "Basic " + auth.Authorization);
             request.AddParameter(bulkRequestHeader, payload, ParameterType.RequestBody);
             return bulkClient.Execute(request);
         }
@@ -349,246 +363,167 @@ namespace omnigage_engagement_voice
         }
 
         /// <summary>
-        /// Create Authorization token following RFC 2617 
-        /// </summary>
-        /// <param name="key"></param>
-        /// <param name="secret"></param>
-        /// <returns>Base64 encoded string</returns>
-        static string CreateAuthorization(string key, string secret)
-        {
-            byte[] authBytes = System.Text.Encoding.UTF8.GetBytes($"{key}:{secret}");
-            return System.Convert.ToBase64String(authBytes);
-        }
-
-        /// <summary>
         /// S3 Upload Failed exception
         /// </summary>
         public class S3UploadFailed : Exception { }
     }
 
+    /// <summary>
+    /// Authentication and request context
+    /// </summary>
     public class AuthContext
     {
-        public string tokenKey;
-        public string tokenSecret;
-        public string host;
-        public string accountKey;
-        public string authorization;
+        public string TokenKey { get; set; }
+        public string TokenSecret { get; set; }
+        public string Host { get; set; }
+        public string AccountKey { get; set; }
+
+        /// <summary>
+        /// Create Authorization token following RFC 2617 
+        /// </summary>
+        /// <returns>Base64 encoded string</returns>
+        public string Authorization
+        {
+            get
+            {
+                byte[] authBytes = System.Text.Encoding.UTF8.GetBytes($"{this.TokenKey}:{this.TokenSecret}");
+                return System.Convert.ToBase64String(authBytes);
+            }
+        }
+        
     }
 
+    /// <summary>
+    /// Resource: `/voice-templates` - https://omnigage.docs.apiary.io/#reference/call-resources/voice-template
+    /// </summary>
     public class VoiceTemplateModel : Adapter
     {
+        public override string Type { get; } = "voice-templates";
+
         public string Name { get; set; }
+
         public string Kind { get; set; }
-        public string UploadId { get; set; }
+
+        public UploadModel Upload { get; set; }
+
+        [JsonIgnore]
         public string FilePath { get; set; }
-
-        public override string Type { get { return "voice-templates"; } }
-
-        public override string Serialize()
-        {
-            return @"{
-                ""attributes"":{
-                    ""name"":""" + this.Name + @""",
-                    ""kind"":""" + this.Kind + @"""
-                },
-                ""relationships"":{
-                    ""upload"":{
-                        ""data"": {
-                            ""type"": ""uploads"",
-                            ""id"": """ + this.UploadId + @"""
-                        }
-                    }
-                },
-                ""type"":""voice-templates""
-            }";
-        }
     }
 
+    /// <summary>
+    /// Resource `/engagements` - https://omnigage.docs.apiary.io/#reference/engagement-resources
+    /// </summary>
     public class EngagementModel : Adapter
     {
+        public override string Type { get; } = "engagements";
+
         public string Name;
+
         public string Direction;
+
         public string Status;
-
-        public override string Type { get { return "engagements"; } }
-
-        public override string Serialize()
-        {
-            string id = "";
-            if (this.Id != null)
-            {
-                id = $"\"id\": \"{this.Id}\",";
-            }
-
-            string status = "";
-            if (this.Status != null)
-            {
-                status = $"\"status\": \"{this.Status}\",";
-            }
-
-            return @"{
-                " + id + @"
-                ""attributes"":{
-                    " + status + @"
-                    ""name"":""" + this.Name + @""",
-                    ""direction"":""" + this.Direction + @"""
-                },
-                ""type"":""engagements""
-            }";
-        }
     }
 
+    /// <summary>
+    /// Resource: `/activities` - https://omnigage.docs.apiary.io/#reference/engagement-resources/activity-collection
+    /// </summary>
     public class ActivityModel : Adapter
     {
+        public override string Type { get; } = "activities";
+
         public string Name;
+
         public string Kind;
-        public string EngagementId;
-        public string CallerIdId;
 
-        public override string Type { get { return "activities"; } }
+        public EngagementModel Engagement;
 
-        public override string Serialize()
-        {
-            return @"{
-                ""attributes"":{
-                    ""name"":""" + this.Name + @""",
-                    ""kind"":""" + this.Kind + @"""
-                },
-                ""relationships"":{
-                    ""engagement"":{
-                        ""data"": {
-                            ""type"": ""engagements"",
-                            ""id"": """ + this.EngagementId + @"""
-                        }
-                    },
-                    ""caller-id"":{
-                        ""data"": {
-                            ""type"": ""caller-ids"",
-                            ""id"": """ + this.CallerIdId + @"""
-                        }
-                    }
-                },
-                ""type"":""activities""
-            }";
-        }
+        [JsonProperty(propertyName: "caller-id")]
+        public CallerIdModel CallerId;
     }
 
+    /// <summary>
+    /// Resource: `/triggers` - https://omnigage.docs.apiary.io/#reference/engagement-resources/trigger-collection
+    /// </summary>
     public class TriggerModel : Adapter
     {
+        public override string Type { get; } = "triggers";
+
         public string Kind;
+
+        [JsonProperty(propertyName: "on-event")]
         public string OnEvent;
-        public string VoiceTemplateId;
-        public string ActivityId;
 
-        public override string Type { get { return "triggers"; } }
+        [JsonProperty(propertyName: "voice-template")]
+        public VoiceTemplateModel VoiceTemplate;
 
-        public override string Serialize()
-        {
-            return @"{
-                ""attributes"":{
-                    ""kind"":""" + this.Kind + @""",
-                    ""on-event"":""" + this.OnEvent + @"""
-                },
-                ""relationships"":{
-                    ""activity"":{
-                        ""data"": {
-                            ""type"": ""activities"",
-                            ""id"": """ + this.ActivityId + @"""
-                        }
-                    },
-                    ""voice-template"":{
-                        ""data"": {
-                            ""type"": ""voice-templates"",
-                            ""id"": """ + this.VoiceTemplateId + @"""
-                        }
-                    }
-                },
-                ""type"":""triggers""
-            }";
-        }
+        public ActivityModel Activity;
     }
 
+    /// <summary>
+    /// Resource: `/envelopes` - https://omnigage.docs.apiary.io/#reference/engagement-resources/envelope-collection
+    /// </summary>
     public class EnvelopeModel : Adapter
     {
-        public string FirstName;
-        public string LastName;
+        public override string Type { get; } = "envelopes";
+
+        [JsonProperty(propertyName: "phone-number")]
         public string PhoneNumber;
-        public string EngagementId;
 
-        public override string Type { get { return "envelopes"; } }
+        [JsonProperty(propertyName: "meta_prop")]
+        public Dictionary<string, string> Meta;
 
-        public override string Serialize()
-        {
-            return @"{
-                ""attributes"":{
-                    ""phone-number"":""" + this.PhoneNumber + @""",
-                    ""meta"": {
-                        ""first-name"":""" + this.FirstName + @""",
-                        ""last-name"":""" + this.LastName + @"""
-                    }
-                },
-                ""relationships"":{
-                    ""engagement"":{
-                        ""data"": {
-                            ""type"": ""engagements"",
-                            ""id"": """ + this.EngagementId + @"""
-                        }
-                    }
-                },
-                ""type"":""envelopes""
-            }";
-        }
+        public EngagementModel Engagement;
 
         public static string SerializeBulk(List<EnvelopeModel> records)
         {
-            // Build the serialized list
-            string instances = "";
-            foreach (var instance in records)
-            {
-                if (instances != "")
-                {
-                    instances += ",";
-                }
-
-                instances += instance.Serialize();
-            }
-
-            // Create bulk envelope schema
-            string payload = @"{
-                ""data"": [" + instances + @"]
-            }";
-
-            return payload;
+            string payload = JsonConvert.SerializeObject(records, new JsonApiSerializerSettings());
+            // Work around `JsonApiSerializer` moving properties named "meta" above "attributes"
+            return payload.Replace("meta_prop", "meta");
         }
     }
 
+    /// <summary>
+    /// Resource: `/uploads` - https://omnigage.docs.apiary.io/#reference/media-resources/upload
+    /// </summary>
+    public class UploadModel : Adapter
+    {
+        public override string Type { get; } = "uploads";
+    }
+
+    /// <summary>
+    /// Resource: `/caller-ids` - https://omnigage.docs.apiary.io/#reference/identity-resources/caller-id-collection
+    /// </summary>
+    public class CallerIdModel : Adapter
+    {
+        public override string Type { get; } = "caller-ids";
+    }
+
+    /// <summary>
+    /// Adapter for faciliating serializing model instances and making requests.
+    /// </summary>
     abstract public class Adapter
     {
         public string Id { get; set; }
-        public abstract string Serialize();
         public abstract string Type { get; }
 
         /// <summary>
-        /// Serialize wrapper for payload. In JSON:API, this is a "data" envelope.
+        /// Serialize the current model instance.
         /// </summary>
-        /// <param name="payload"></param>
-        /// <returns></returns>
-        static public string SerializePayload(string payload)
+        /// <returns>string</returns>
+        public string Serialize()
         {
-            return @"{
-                ""data"": " + payload + @"
-            }";
+            return JsonConvert.SerializeObject(this, new JsonApiSerializerSettings());
         }
 
         /// <summary>
         /// Helper method for creating a new instance.
         /// </summary>
         /// <param name="client"></param>
-        /// <returns></returns>
+        /// <returns>response</returns>
         public async Task<JObject> Create(HttpClient client)
         {
             string payload = this.Serialize();
-            JObject response = await PostRequest(client, this.Type, SerializePayload(payload));
+            JObject response = await PostRequest(client, this.Type, payload);
             this.Id = (string)response.SelectToken("data.id");
             return response;
         }
@@ -597,11 +532,11 @@ namespace omnigage_engagement_voice
         /// Helper method for updating an instance.
         /// </summary>
         /// <param name="client"></param>
-        /// <returns></returns>
+        /// <returns>response</returns>
         public async Task<JObject> Update(HttpClient client)
         {
             string payload = this.Serialize();
-            JObject response = await PatchRequest(client, $"{this.Type}/{this.Id}", SerializePayload(payload));
+            JObject response = await PatchRequest(client, $"{this.Type}/{this.Id}", payload);
             return response;
         }
 
