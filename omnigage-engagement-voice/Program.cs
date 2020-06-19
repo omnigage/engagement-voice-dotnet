@@ -3,7 +3,6 @@ using System.IO;
 using System.Text;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
@@ -11,6 +10,7 @@ using Newtonsoft.Json.Linq;
 using Newtonsoft.Json;
 using RestSharp;
 using JsonApiSerializer;
+using AutoMapper;
 
 namespace omnigage_engagement_voice
 {
@@ -122,15 +122,22 @@ namespace omnigage_engagement_voice
                 client.DefaultRequestHeaders.Add("Authorization", "Basic " + auth.Authorization);
                 client.DefaultRequestHeaders.Add("X-Account-Key", auth.AccountKey);
 
-                // Upload audio files and assign upload IDs
-                humanRecording.Upload = new UploadModel
+                // Create upload instances
+                UploadModel humanRecordingUpload = new UploadModel
                 {
-                    Id = await Upload(humanRecording.FilePath, client)
+                    FilePath = humanRecording.FilePath
                 };
-                machineRecording.Upload = new UploadModel
+                UploadModel machineRecordingUpload = new UploadModel
                 {
-                    Id = await Upload(machineRecording.FilePath, client)
+                    FilePath = machineRecording.FilePath
                 };
+
+                await humanRecordingUpload.Create(client);
+                await machineRecordingUpload.Create(client);
+
+                // Add upload relationships to voice templates
+                humanRecording.Upload = humanRecordingUpload;
+                machineRecording.Upload = machineRecordingUpload;
 
                 // Create voice recording, which will be used for the `human` trigger
                 await humanRecording.Create(client);
@@ -179,193 +186,13 @@ namespace omnigage_engagement_voice
                 }
 
                 // Populate engagement queue
-                PostBulkRequest(auth, "envelopes", EnvelopeModel.SerializeBulk(envelopes));
+                Adapter.PostBulkRequest(auth, "envelopes", EnvelopeModel.SerializeBulk(envelopes));
 
                 // Schedule engagement for processing
                 engagement.Status = "scheduled";
                 await engagement.Update(client);
             };
         }
-
-        /// <summary>
-        /// Create Omnigage upload instance for signing S3 request. Upload `filePath` to S3 and return
-        /// `upload` id to be used on another instance.
-        /// </summary>
-        /// <param name="filePath"></param>
-        /// <param name="client"></param>
-        /// <returns>Upload ID</returns>
-        static async Task<string> Upload(string filePath, HttpClient client)
-        {
-            // Check that the file exists
-            if (!File.Exists(filePath))
-            {
-                throw new FileNotFoundException($"File {filePath} not found.");
-            }
-
-            // Collect meta on the file
-            string fileName = Path.GetFileName(filePath);
-            long fileSize = new System.IO.FileInfo(filePath).Length;
-            string mimeType = GetMimeType(fileName);
-
-            // Ensure proper MIME type
-            if (mimeType == null)
-            {
-                throw new System.InvalidOperationException("Only WAV or MP3 files accepted.");
-            }
-
-            // Build `upload` instance payload and make request
-            string uploadContent = CreateUploadSchema(fileName, mimeType, fileSize);
-            JObject uploadResponse = await Adapter.PostRequest(client, "uploads", uploadContent);
-
-            // Extract upload ID and request URL
-            string uploadId = (string)uploadResponse.SelectToken("data.id");
-            string requestUrl = (string)uploadResponse.SelectToken("data.attributes.request-url");
-
-            Console.WriteLine($"Upload ID: {uploadId}");
-
-            using (var clientS3 = new HttpClient())
-            {
-                // Create multipart form including setting form data and file content
-                MultipartFormDataContent form = await CreateMultipartForm(uploadResponse, filePath, fileName, mimeType);
-
-                // Upload to S3
-                await PostS3Request(clientS3, uploadResponse, form, requestUrl);
-
-                return uploadId;
-            };
-        }
-        
-        /// <summary>
-        /// Create a bulk request to the Omnigage API and return an object
-        /// </summary>
-        /// <param name="auth"></param>
-        /// <param name="uri"></param>
-        /// <param name="payload"></param>
-        /// <returns>IRestResponse</returns>
-        static IRestResponse PostBulkRequest(AuthContext auth, string uri, string payload)
-        {
-            string bulkRequestHeader = "application/vnd.api+json;ext=bulk";
-            var bulkClient = new RestClient(auth.Host + uri);
-            var request = new RestRequest(Method.POST);
-            request.AddHeader("Accept", bulkRequestHeader);
-            request.AddHeader("Content-Type", bulkRequestHeader);
-            request.AddHeader("X-Account-Key", auth.AccountKey);
-            request.AddHeader("Authorization", "Basic " + auth.Authorization);
-            request.AddParameter(bulkRequestHeader, payload, ParameterType.RequestBody);
-            return bulkClient.Execute(request);
-        }
-
-        /// <summary>
-        /// Make a POST request to S3 using presigned headers and multipart form
-        /// </summary>
-        /// <param name="client"></param>
-        /// <param name="uploadInstance"></param>
-        /// <param name="form"></param>
-        /// <param name="url"></param>
-        static async Task PostS3Request(HttpClient client, JObject uploadInstance, MultipartFormDataContent form, string url)
-        {
-            object[] requestHeaders = uploadInstance.SelectToken("data.attributes.request-headers").Select(s => (object)s).ToArray();
-
-            // Set each of the `upload` instance headers
-            foreach (JObject header in requestHeaders)
-            {
-                foreach (KeyValuePair<string, JToken> prop in header)
-                {
-                    client.DefaultRequestHeaders.Add(prop.Key, (string)prop.Value);
-                }
-            }
-
-            // Make S3 request
-            HttpResponseMessage responseS3 = await client.PostAsync(url, form);
-            string responseContent = await responseS3.Content.ReadAsStringAsync();
-
-            if ((int)responseS3.StatusCode == 204)
-            {
-                Console.WriteLine("Successfully uploaded file.");
-            }
-            else
-            {
-                Console.WriteLine(responseS3);
-                throw new S3UploadFailed();
-            }
-        }
-
-        /// <summary>
-        /// Create a multipart form using form data from the Omnigage `upload` instance along with the specified file path.
-        /// </summary>
-        /// <param name="uploadInstance"></param>
-        /// <param name="filePath"></param>
-        /// <param name="fileName"></param>
-        /// <param name="mimeType"></param>
-        /// <returns>A multipart form</returns>
-        static async Task<MultipartFormDataContent> CreateMultipartForm(JObject uploadInstance, string filePath, string fileName, string mimeType)
-        {
-            // Retrieve values to use for uploading to S3
-            object[] requestFormData = uploadInstance.SelectToken("data.attributes.request-form-data").Select(s => (object)s).ToArray();
-
-            MultipartFormDataContent form = new MultipartFormDataContent("Upload----" + DateTime.Now.ToString(CultureInfo.InvariantCulture));
-
-            // Set each of the `upload` instance form data
-            foreach (JObject formData in requestFormData)
-            {
-                foreach (KeyValuePair<string, JToken> prop in formData)
-                {
-                    form.Add(new StringContent((string)prop.Value), prop.Key);
-                }
-            }
-
-            // Set the content type (required by presigned URL)
-            form.Add(new StringContent(mimeType), "Content-Type");
-
-            // Add file content to form
-            ByteArrayContent fileContent = new ByteArrayContent(await File.ReadAllBytesAsync(filePath));
-            fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("multipart/form-data");
-            form.Add(fileContent, "file", fileName);
-
-            return form;
-        }
-
-        /// <summary>
-        /// Determine MIME type based on the file name.
-        /// </summary>
-        /// <param name="fileName"></param>
-        /// <returns>MIME type</returns>
-        static string GetMimeType(string fileName)
-        {
-            string extension = Path.GetExtension(fileName);
-
-            if (extension == ".wav")
-            {
-                return "audio/wav";
-            }
-            else if (extension == ".mp3")
-            {
-                return "audio/mpeg";
-            }
-
-            return null;
-        }
-
-        /// <summary>
-        /// Create Omnigage `uploads` schema
-        /// </summary>
-        /// <param name="fileName"></param>
-        /// <param name="mimeType"></param>
-        /// <param name="fileSize"></param>
-        /// <returns>JSON</returns>
-        static string CreateUploadSchema(string fileName, string mimeType, long fileSize)
-        {
-            return @"{
-                'name': '" + fileName + @"',
-                'type': '" + mimeType + @"',
-                'size': " + fileSize + @"
-            }";
-        }
-
-        /// <summary>
-        /// S3 Upload Failed exception
-        /// </summary>
-        public class S3UploadFailed : Exception { }
     }
 
     /// <summary>
@@ -390,7 +217,6 @@ namespace omnigage_engagement_voice
                 return System.Convert.ToBase64String(authBytes);
             }
         }
-        
     }
 
     /// <summary>
@@ -488,6 +314,130 @@ namespace omnigage_engagement_voice
     public class UploadModel : Adapter
     {
         public override string Type { get; } = "uploads";
+
+        [JsonProperty(propertyName: "request-url")]
+        public string RequestUrl;
+
+        [JsonProperty(propertyName: "request-method")]
+        public string RequestMethod;
+
+        [JsonProperty(propertyName: "request-headers")]
+        public List<object> RequestHeaders;
+
+        [JsonProperty(propertyName: "request-form-data")]
+        public List<object> RequestFormData;
+
+        [JsonIgnore]
+        public string FileName { get; set; }
+
+        [JsonIgnore]
+        public string MimeType { get; set; }
+
+        [JsonIgnore]
+        public long FileSize { get; set; }
+
+        [JsonIgnore]
+        public string FilePath { get; set; }
+
+        public override string Serialize()
+        {
+            return @"{
+                'name': '" + this.FileName + @"',
+                'type': '" + this.MimeType + @"',
+                'size': " + this.FileSize + @"
+            }";
+        }
+
+        public override async Task Create(HttpClient client)
+        {
+            this.FileName = Path.GetFileName(this.FilePath);
+            this.FileSize = new System.IO.FileInfo(this.FilePath).Length;
+            this.MimeType = MimeTypes.GetMimeType(this.FileName);
+
+            await base.Create(client);
+
+            using (var clientS3 = new HttpClient())
+            {
+                // Create multipart form including setting form data and file content
+                MultipartFormDataContent form = await this.CreateMultipartForm();
+
+                // Upload to S3
+                await this.PostS3Request(clientS3, form);
+            };
+        }
+
+        /// <summary>
+        /// For debugging.
+        /// </summary>
+        /// <returns></returns>
+        public override string ToString()
+        {
+            return JsonConvert.SerializeObject(this, new JsonApiSerializerSettings());
+        }
+
+        /// <summary>
+        /// Create a multipart form using form data from the Omnigage `upload` instance along with the specified file path.
+        /// </summary>
+        /// <param name="uploadInstance"></param>
+        /// <param name="filePath"></param>
+        /// <param name="fileName"></param>
+        /// <param name="mimeType"></param>
+        /// <returns>A multipart form</returns>
+        public async Task<MultipartFormDataContent> CreateMultipartForm()
+        {
+            MultipartFormDataContent form = new MultipartFormDataContent("Upload----" + DateTime.Now.ToString(CultureInfo.InvariantCulture));
+
+            foreach (JObject formData in this.RequestFormData)
+            {
+                foreach (KeyValuePair<string, JToken> prop in formData)
+                {
+                    form.Add(new StringContent((string)prop.Value), prop.Key);
+                }
+            }
+
+            // Set the content type(required by presigned URL)
+            form.Add(new StringContent(this.MimeType), "Content-Type");
+
+            // Add file content to form
+            ByteArrayContent fileContent = new ByteArrayContent(await File.ReadAllBytesAsync(this.FilePath));
+            fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("multipart/form-data");
+            form.Add(fileContent, "file", this.FileName);
+
+            return form;
+        }
+
+        /// <summary>
+        /// Make a POST request to S3 using presigned headers and multipart form
+        /// </summary>
+        /// <param name="client"></param>
+        /// <param name="uploadInstance"></param>
+        /// <param name="form"></param>
+        /// <param name="url"></param>
+        async Task PostS3Request(HttpClient client, MultipartFormDataContent form)
+        {
+            // Set each of the `upload` instance headers
+            foreach (JObject header in this.RequestHeaders)
+            {
+                foreach (KeyValuePair<string, JToken> prop in header)
+                {
+                    client.DefaultRequestHeaders.Add(prop.Key, (string)prop.Value);
+                }
+            }
+
+            // Make S3 request
+            HttpResponseMessage responseS3 = await client.PostAsync(this.RequestUrl, form);
+            string responseContent = await responseS3.Content.ReadAsStringAsync();
+
+            if ((int)responseS3.StatusCode == 204)
+            {
+                Console.WriteLine("Successfully uploaded file.");
+            }
+            else
+            {
+                Console.WriteLine(responseS3);
+                throw new S3UploadFailed();
+            }
+        }
     }
 
     /// <summary>
@@ -506,11 +456,16 @@ namespace omnigage_engagement_voice
         public string Id { get; set; }
         public abstract string Type { get; }
 
+        public override string ToString()
+        {
+            return this.Serialize();
+        }
+
         /// <summary>
         /// Serialize the current model instance.
         /// </summary>
         /// <returns>string</returns>
-        public string Serialize()
+        public virtual string Serialize()
         {
             return JsonConvert.SerializeObject(this, new JsonApiSerializerSettings());
         }
@@ -519,25 +474,30 @@ namespace omnigage_engagement_voice
         /// Helper method for creating a new instance.
         /// </summary>
         /// <param name="client"></param>
-        /// <returns>response</returns>
-        public async Task<JObject> Create(HttpClient client)
+        public virtual async Task Create(HttpClient client)
         {
             string payload = this.Serialize();
-            JObject response = await PostRequest(client, this.Type, payload);
-            this.Id = (string)response.SelectToken("data.id");
-            return response;
+            string response = await PostRequest(client, this.Type, payload);
+            Type type = this.GetType();
+
+            object instance = JsonConvert.DeserializeObject(response, type, new JsonApiSerializerSettings());
+
+            this.CopyProperties(instance);
         }
 
         /// <summary>
         /// Helper method for updating an instance.
         /// </summary>
         /// <param name="client"></param>
-        /// <returns>response</returns>
-        public async Task<JObject> Update(HttpClient client)
+        public virtual async Task Update(HttpClient client)
         {
             string payload = this.Serialize();
-            JObject response = await PatchRequest(client, $"{this.Type}/{this.Id}", payload);
-            return response;
+            string response = await PatchRequest(client, $"{this.Type}/{this.Id}", payload);
+            Type type = this.GetType();
+
+            object instance = JsonConvert.DeserializeObject(response, type, new JsonApiSerializerSettings());
+
+            this.CopyProperties(instance);
         }
 
         /// <summary>
@@ -547,12 +507,11 @@ namespace omnigage_engagement_voice
         /// <param name="uri"></param>
         /// <param name="content"></param>
         /// <returns>JObject</returns>
-        public static async Task<JObject> PostRequest(HttpClient client, string uri, string content)
+        public static async Task<string> PostRequest(HttpClient client, string uri, string content)
         {
             StringContent payload = new StringContent(content, Encoding.UTF8, "application/json");
             HttpResponseMessage request = await client.PostAsync(uri, payload);
-            string response = await request.Content.ReadAsStringAsync();
-            return JObject.Parse(response);
+            return await request.Content.ReadAsStringAsync();
         }
 
 
@@ -563,12 +522,52 @@ namespace omnigage_engagement_voice
         /// <param name="uri"></param>
         /// <param name="content"></param>
         /// <returns>JObject</returns>
-        public static async Task<JObject> PatchRequest(HttpClient client, string uri, string content)
+        public static async Task<string> PatchRequest(HttpClient client, string uri, string content)
         {
             StringContent payload = new StringContent(content, Encoding.UTF8, "application/json");
             HttpResponseMessage request = await client.PatchAsync(uri, payload);
-            string response = await request.Content.ReadAsStringAsync();
-            return JObject.Parse(response);
+            return await request.Content.ReadAsStringAsync();
+        }
+
+        /// <summary>
+        /// Create a bulk request to the Omnigage API and return an object
+        /// </summary>
+        /// <param name="auth"></param>
+        /// <param name="uri"></param>
+        /// <param name="payload"></param>
+        /// <returns>IRestResponse</returns>
+        public static IRestResponse PostBulkRequest(AuthContext auth, string uri, string payload)
+        {
+            string bulkRequestHeader = "application/vnd.api+json;ext=bulk";
+            var bulkClient = new RestClient(auth.Host + uri);
+            var request = new RestRequest(Method.POST);
+            request.AddHeader("Accept", bulkRequestHeader);
+            request.AddHeader("Content-Type", bulkRequestHeader);
+            request.AddHeader("X-Account-Key", auth.AccountKey);
+            request.AddHeader("Authorization", "Basic " + auth.Authorization);
+            request.AddParameter(bulkRequestHeader, payload, ParameterType.RequestBody);
+            return bulkClient.Execute(request);
+        }
+
+        /// <summary>
+        /// Copy source properties to current instance.
+        /// </summary>
+        /// <param name="source"></param>
+        public void CopyProperties(object source)
+        {
+            Type type = this.GetType();
+
+            MapperConfiguration _configuration = new MapperConfiguration(cnf =>
+            {
+                cnf.CreateMap(type, type).ForAllMembers(opts => opts.Condition((src, dest, srcMember) => srcMember != null));
+            });
+            var mapper = new Mapper(_configuration);
+            mapper.DefaultContext.Mapper.Map(source, this);
         }
     }
+
+    /// <summary>
+    /// S3 Upload Failed exception
+    /// </summary>
+    public class S3UploadFailed : Exception { }
 }
